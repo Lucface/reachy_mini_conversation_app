@@ -3,7 +3,7 @@ import time
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import ClassVar, TypeAlias
+from typing import Any, ClassVar, TypeAlias
 from collections.abc import Callable
 
 import numpy as np
@@ -72,6 +72,16 @@ class ConversationHandler(AsyncStreamHandler, ABC):
     def _idle_behavior_ready(self) -> bool:
         """Return whether idle behavior may run now. Backends can add guards."""
         return True
+
+    @staticmethod
+    def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
+        """Remove bulky transport-only fields before echoing tool output back to the model."""
+        if tool_name == "camera" and "b64_im" in tool_result:
+            sanitized = dict(tool_result)
+            sanitized.pop("b64_im", None)
+            sanitized["image_attached"] = True
+            return sanitized
+        return tool_result
 
     async def emit(self) -> HandlerOutput:
         """Emit the next queued output, triggering local idle behavior when due."""

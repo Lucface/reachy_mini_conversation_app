@@ -9,6 +9,14 @@ from importlib.resources import files
 
 from dotenv import find_dotenv, load_dotenv
 
+from reachy_mini_conversation_app.openai_live_protocol import (
+    LIVE_MODEL,
+    LIVE_WS_URL,
+    DEFAULT_VOICE,
+    LIVE_AVAILABLE_VOICES,
+    DEFAULT_DELEGATION_MODEL,
+)
+
 
 # Locked profile: set to a profile name (e.g., "astronomer") to lock the app
 # to that profile and disable all profile switching. Leave as None for normal behavior.
@@ -61,12 +69,21 @@ HF_AVAILABLE_VOICES: list[str] = [
 ]
 
 HF_BACKEND = "huggingface"
+OPENAI_GPT_LIVE_BACKEND = "openai-gpt-live-1"
+CONVERSATION_BACKEND_ENV = "CONVERSATION_BACKEND"
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+OPENAI_LIVE_DELEGATION_MODEL_ENV = "OPENAI_LIVE_DELEGATION_MODEL"
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
 REALTIME_TRANSCRIPTION_LANGUAGE_ENV = "REALTIME_TRANSCRIPTION_LANGUAGE"
 HF_LOCAL_CONNECTION_MODE = "local"
 HF_DEPLOYED_CONNECTION_MODE = "deployed"
 HF_REALTIME_SESSION_PROXY_URL = "https://pollen-robotics-reachy-mini-realtime-url.hf.space/session"
+OPENAI_LIVE_WS_URL = LIVE_WS_URL
+OPENAI_LIVE_MODEL = LIVE_MODEL
+DEFAULT_OPENAI_LIVE_DELEGATION_MODEL = DEFAULT_DELEGATION_MODEL
+OPENAI_LIVE_AVAILABLE_VOICES = LIVE_AVAILABLE_VOICES
+OPENAI_LIVE_DEFAULT_VOICE = DEFAULT_VOICE
 
 
 @dataclass(frozen=True)
@@ -87,18 +104,39 @@ HF_DEFAULTS = HFBackendDefaults()
 
 logger = logging.getLogger(__name__)
 
-# Removed backend selectors kept in stale robot .env files: warn but ignore them.
+# Removed selectors kept in stale robot .env files: warn but ignore them.
 _OBSOLETE_BACKEND_ENV_NAMES = ("BACKEND_PROVIDER", "MODEL_NAME")
+_SUPPORTED_CONVERSATION_BACKENDS = {HF_BACKEND, OPENAI_GPT_LIVE_BACKEND}
 
 
 def _warn_on_obsolete_backend_env() -> None:
-    """Warn when removed multi-backend selectors are still set; Hugging Face is the only backend."""
+    """Warn when removed selectors are still set; they do not choose a backend."""
     present = [name for name in _OBSOLETE_BACKEND_ENV_NAMES if (os.getenv(name) or "").strip()]
     if present:
         logger.warning(
-            "Ignoring obsolete backend environment variable(s): %s. This app now uses the Hugging Face backend only.",
+            "Ignoring obsolete backend environment variable(s): %s. Use %s=%s|%s instead.",
             ", ".join(present),
+            CONVERSATION_BACKEND_ENV,
+            HF_BACKEND,
+            OPENAI_GPT_LIVE_BACKEND,
         )
+
+
+def _normalize_conversation_backend(value: str | None) -> str | None:
+    """Normalize the conversation backend selector, if explicitly configured."""
+    candidate = (value or "").strip().lower()
+    if not candidate:
+        return None
+    if candidate not in _SUPPORTED_CONVERSATION_BACKENDS:
+        logger.warning(
+            "Invalid %s=%r. Expected %s or %s.",
+            CONVERSATION_BACKEND_ENV,
+            value,
+            HF_BACKEND,
+            OPENAI_GPT_LIVE_BACKEND,
+        )
+        return None
+    return candidate
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -310,6 +348,11 @@ _warn_on_obsolete_backend_env()
 class Config:
     """Configuration class for the conversation app."""
 
+    CONVERSATION_BACKEND = _normalize_conversation_backend(os.getenv(CONVERSATION_BACKEND_ENV)) or HF_BACKEND
+    OPENAI_API_KEY = os.getenv(OPENAI_API_KEY_ENV)
+    OPENAI_LIVE_DELEGATION_MODEL = (
+        os.getenv(OPENAI_LIVE_DELEGATION_MODEL_ENV) or ""
+    ).strip() or DEFAULT_OPENAI_LIVE_DELEGATION_MODEL
     HF_REALTIME_CONNECTION_MODE = (
         _normalize_hf_connection_mode(os.getenv(HF_REALTIME_CONNECTION_MODE_ENV)) or HF_DEFAULTS.connection_mode
     )
@@ -320,10 +363,12 @@ class Config:
     HF_TOKEN = os.getenv("HF_TOKEN")  # Optional, falls back to hf auth login if not set
 
     logger.debug(
-        "HF mode: %s, HF session URL set: %s, HF direct URL set: %s",
+        "Backend: %s, HF mode: %s, HF session URL set: %s, HF direct URL set: %s, OpenAI key set: %s",
+        CONVERSATION_BACKEND,
         HF_REALTIME_CONNECTION_MODE,
         bool(HF_REALTIME_SESSION_URL and HF_REALTIME_SESSION_URL.strip()),
         bool(HF_REALTIME_WS_URL and HF_REALTIME_WS_URL.strip()),
+        bool(OPENAI_API_KEY and OPENAI_API_KEY.strip()),
     )
 
     # Filesystem root containing profile directories, not a Python import path.
@@ -420,6 +465,11 @@ config = Config()
 def refresh_runtime_config_from_env() -> None:
     """Refresh mutable runtime config fields from the current environment."""
     _warn_on_obsolete_backend_env()
+    config.CONVERSATION_BACKEND = _normalize_conversation_backend(os.getenv(CONVERSATION_BACKEND_ENV)) or HF_BACKEND
+    config.OPENAI_API_KEY = os.getenv(OPENAI_API_KEY_ENV)
+    config.OPENAI_LIVE_DELEGATION_MODEL = (
+        os.getenv(OPENAI_LIVE_DELEGATION_MODEL_ENV) or ""
+    ).strip() or DEFAULT_OPENAI_LIVE_DELEGATION_MODEL
     config.HF_REALTIME_CONNECTION_MODE = (
         _normalize_hf_connection_mode(os.getenv(HF_REALTIME_CONNECTION_MODE_ENV)) or HF_DEFAULTS.connection_mode
     )
@@ -433,13 +483,36 @@ def refresh_runtime_config_from_env() -> None:
     config.REACHY_MINI_CUSTOM_PROFILE = LOCKED_PROFILE or os.getenv("REACHY_MINI_CUSTOM_PROFILE")
 
 
-def get_available_voices() -> list[str]:
-    """Return the curated Hugging Face voice list."""
+def get_conversation_backend() -> str:
+    """Return the selected conversation backend; Hugging Face is the default."""
+    return _normalize_conversation_backend(getattr(config, "CONVERSATION_BACKEND", None)) or HF_BACKEND
+
+
+def get_openai_api_key() -> str | None:
+    """Return the configured OpenAI API key, if any."""
+    value = (getattr(config, "OPENAI_API_KEY", None) or "").strip()
+    return value or None
+
+
+def get_openai_live_delegation_model() -> str:
+    """Return the Responses model used for GPT-Live-1 tool delegation."""
+    value = (getattr(config, "OPENAI_LIVE_DELEGATION_MODEL", None) or "").strip()
+    return value or DEFAULT_OPENAI_LIVE_DELEGATION_MODEL
+
+
+def get_available_voices(backend: str | None = None) -> list[str]:
+    """Return voices for the selected backend."""
+    selected = _normalize_conversation_backend(backend) or get_conversation_backend()
+    if selected == OPENAI_GPT_LIVE_BACKEND:
+        return list(OPENAI_LIVE_AVAILABLE_VOICES)
     return list(HF_AVAILABLE_VOICES)
 
 
-def get_default_voice() -> str:
-    """Return the default Hugging Face voice."""
+def get_default_voice(backend: str | None = None) -> str:
+    """Return the default voice for the selected backend."""
+    selected = _normalize_conversation_backend(backend) or get_conversation_backend()
+    if selected == OPENAI_GPT_LIVE_BACKEND:
+        return OPENAI_LIVE_DEFAULT_VOICE
     return HF_DEFAULTS.voice
 
 
@@ -476,6 +549,13 @@ def get_hf_connection_selection() -> HFConnectionSelection:
 def has_hf_realtime_target() -> bool:
     """Return whether Hugging Face has a target for the selected mode."""
     return get_hf_connection_selection().has_target
+
+
+def has_backend_configuration() -> bool:
+    """Return whether the selected conversation backend has the credentials it needs."""
+    if get_conversation_backend() == OPENAI_GPT_LIVE_BACKEND:
+        return bool(get_openai_api_key())
+    return has_hf_realtime_target()
 
 
 def set_instance_path(instance_path: str | Path | None) -> None:

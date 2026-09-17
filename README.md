@@ -33,8 +33,8 @@ Conversational app for the Reachy Mini robot combining realtime voice, vision, p
 
 ## Overview
 
-- Low-latency audio conversation through the Hugging Face realtime backend, using the built-in server or a local endpoint.
-- Vision is handled by the realtime backend when the `camera` tool is used.
+- Low-latency audio conversation through the Hugging Face realtime backend by default, using the built-in server or a local endpoint. Optionally switch to OpenAI GPT-Live-1 for full-duplex Live API voice.
+- Vision is handled by the selected realtime backend when the `camera` tool is used. On GPT-Live-1, captured frames are forwarded to the Responses delegation model (the Live voice frontend does not accept images).
 - Layered motion system queues primary moves (dances, emotions, goto poses, breathing) while blending speech-reactive wobble.
 - Async tools integrate motion, camera capture, and MCP Tool Spaces. The optional web UI (`--ui`) manages conversations, personalities, tools, and settings.
 
@@ -98,11 +98,14 @@ pip install -e .[dev]                   # Development tools
 
 The default setup uses the Hugging Face backend and does not require an API key.
 
-Copy `.env.example` to `.env` when you want to point Hugging Face at your own local endpoint.
+Copy `.env.example` to `.env` when you want to point Hugging Face at your own local endpoint, or to enable OpenAI GPT-Live-1.
 
 | Variable | Description |
 |----------|-------------|
-| `REALTIME_TRANSCRIPTION_LANGUAGE` | Optional input transcription language for the realtime backend. Defaults to `en`; set to a backend-supported code such as `zh` for Chinese. |
+| `CONVERSATION_BACKEND` | Conversation provider: `huggingface` (default) or `openai-gpt-live-1`. |
+| `OPENAI_API_KEY` | Required when `CONVERSATION_BACKEND=openai-gpt-live-1`. Stored in the instance `.env` if saved from the UI. Never commit this value. |
+| `OPENAI_LIVE_DELEGATION_MODEL` | Responses model used for GPT-Live-1 tool calls. Defaults to `gpt-5.6-luna`. |
+| `REALTIME_TRANSCRIPTION_LANGUAGE` | Optional input transcription language for the Hugging Face realtime backend. Defaults to `en`; set to a backend-supported code such as `zh` for Chinese. |
 | `HF_REALTIME_CONNECTION_MODE` | Hugging Face connection selector: `deployed` uses the built-in Hugging Face server; `local` uses `HF_REALTIME_WS_URL`. Defaults to `deployed`. |
 | `HF_REALTIME_WS_URL` | Direct websocket endpoint for your own Hugging Face backend. Accepts either a base URL like `ws://127.0.0.1:8765/v1` or the full websocket URL `ws://127.0.0.1:8765/v1/realtime`. Used when `HF_REALTIME_CONNECTION_MODE=local`. |
 | `HF_TOKEN` | Optional token for Hugging Face access. Local endpoints receive only this explicitly configured token. |
@@ -147,7 +150,28 @@ HF_REALTIME_CONNECTION_MODE=local
 HF_REALTIME_WS_URL=ws://127.0.0.1:8765/v1/realtime
 ```
 
-In the web UI's Settings view, the Connection section lets you choose either the built-in server or a local `host:port` target. The UI writes `HF_REALTIME_CONNECTION_MODE` for you, and the local path writes `HF_REALTIME_WS_URL` with a default of `localhost:8765`.
+In the web UI's Settings view, the Connection section lets you choose Hugging Face (hosted or local `host:port`) or OpenAI GPT-Live-1. Hugging Face writes `HF_REALTIME_CONNECTION_MODE` and, for local, `HF_REALTIME_WS_URL` with a default of `localhost:8765`. GPT-Live-1 writes `CONVERSATION_BACKEND` and `OPENAI_API_KEY`.
+
+### OpenAI GPT-Live-1
+
+Set these values to talk through OpenAI's full-duplex Live API instead of Hugging Face:
+
+```env
+CONVERSATION_BACKEND=openai-gpt-live-1
+OPENAI_API_KEY=sk-...
+# Optional. Defaults to gpt-5.6-luna.
+# OPENAI_LIVE_DELEGATION_MODEL=gpt-5.6-terra
+```
+
+The app opens `wss://api.openai.com/v1/live/sessions`, starts a `gpt-live-1` session, and registers robot tools on Responses delegation so dance, motion, memory, and other local tools still run in-process. The Live JSON/WebSocket helpers live in `openai_live_protocol.py` so another app can copy that file without this repo's conversation loop. Production cutover for Luc's robot is on Lucface/niero; this fork is the upstream-shaped provider.
+
+Selectable Live voices include `marin` (default), `cedar`, plus the Live catalog (`quartz`, `ripple`, `vesper`, `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`, `delta`, `cinder`) and the shared OpenAI voices (`alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`). Voice is fixed for a session; changing it reconnects.
+
+Gaps versus Hugging Face:
+
+- The Live voice frontend does not accept images. `camera` still captures a frame and forwards it to the Responses backend. If that image item is rejected, the tool result is still spoken as text-only — use Hugging Face when you need the tightly coupled vision path.
+- Input transcription language (`REALTIME_TRANSCRIPTION_LANGUAGE`) applies to the Hugging Face backend only.
+- Stale `BACKEND_PROVIDER` / `MODEL_NAME` env vars are ignored; use `CONVERSATION_BACKEND`.
 
 ## Running the app
 

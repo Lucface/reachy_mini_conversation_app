@@ -164,16 +164,6 @@ class HuggingFaceRealtimeHandler(ConversationHandler):
         self._in_flight_tool_calls: set[str] = set()
         self._tool_batch_needs_response = False
 
-    @staticmethod
-    def _sanitize_tool_result_for_model(tool_name: str, tool_result: dict[str, Any]) -> dict[str, Any]:
-        """Remove bulky transport-only fields before echoing tool output back to the model."""
-        if tool_name == "camera" and "b64_im" in tool_result:
-            sanitized = dict(tool_result)
-            sanitized.pop("b64_im", None)
-            sanitized["image_attached"] = True
-            return sanitized
-        return tool_result
-
     def _normalize_startup_voice(self, voice: str | None) -> str | None:
         """Return a valid persisted startup voice, or None."""
         return self._resolve_backend_voice(voice, source="persisted startup voice")

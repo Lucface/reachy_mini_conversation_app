@@ -340,6 +340,57 @@ def test_backend_config_rejects_invalid_hf_port_zero(
     assert resp["error"]["data"]["reason"] == "invalid_hf_port"
 
 
+def test_backend_config_persists_openai_gpt_live_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settings API should persist GPT-Live-1 and the OpenAI key without echoing it."""
+    monkeypatch.setattr(config, "CONVERSATION_BACKEND", "huggingface")
+    monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+    monkeypatch.delenv("CONVERSATION_BACKEND", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    app = FastAPI()
+    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+    stream = LocalStream(MagicMock(), robot, settings_app=app, instance_path=str(tmp_path))
+    stream._init_settings_ui_if_needed()
+
+    data = _rpc_call(
+        app,
+        "backend.config",
+        {"backend": "openai-gpt-live-1", "openai_api_key": "sk-test-live"},
+    )["result"]
+
+    assert data["ok"] is True
+    assert data["backend"] == "openai-gpt-live-1"
+    assert data["has_openai_api_key"] is True
+    assert data["can_proceed"] is True
+    assert "sk-test-live" not in str(data)
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "CONVERSATION_BACKEND=openai-gpt-live-1" in env_text
+    assert "OPENAI_API_KEY=sk-test-live" in env_text
+
+
+def test_backend_config_rejects_openai_gpt_live_without_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GPT-Live-1 requires an API key when none is already configured."""
+    monkeypatch.setattr(config, "CONVERSATION_BACKEND", "huggingface")
+    monkeypatch.setattr(config, "OPENAI_API_KEY", None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    app = FastAPI()
+    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+    stream = LocalStream(MagicMock(), robot, settings_app=app, instance_path=str(tmp_path))
+    stream._init_settings_ui_if_needed()
+
+    resp = _rpc_call(app, "backend.config", {"backend": "openai-gpt-live-1"})
+
+    assert resp["error"]["data"]["reason"] == "missing_openai_api_key"
+
+
 def test_status_reports_direct_hf_ws_url_as_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -436,7 +487,7 @@ def test_backend_startup_failure_is_recorded_without_raising(
 
 def test_media_warmup_overlaps_audio_startup_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Audio configuration should run while the media pipelines warm up."""
-    monkeypatch.setattr("reachy_mini_conversation_app.console.has_hf_realtime_target", lambda: True)
+    monkeypatch.setattr("reachy_mini_conversation_app.console.has_backend_configuration", lambda: True)
 
     handler = MagicMock()
     handler.shutdown = AsyncMock()

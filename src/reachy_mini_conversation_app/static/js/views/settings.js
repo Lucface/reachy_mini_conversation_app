@@ -1,4 +1,4 @@
-/** Settings view: Hugging Face connection, voice, and runtime status. */
+/** Settings view: conversation backend, voice, and runtime status. */
 
 import {
   applyVoice,
@@ -11,6 +11,11 @@ import {
 } from "../api.js";
 import { h } from "../ui.js";
 
+const BACKENDS = Object.freeze({
+  HUGGINGFACE: "huggingface",
+  OPENAI_GPT_LIVE: "openai-gpt-live-1",
+});
+
 const HF_CONNECTION_MODES = Object.freeze({
   DEPLOYED: "deployed",
   LOCAL: "local",
@@ -18,6 +23,12 @@ const HF_CONNECTION_MODES = Object.freeze({
 
 const DEFAULT_HF_HOST = "localhost";
 const DEFAULT_HF_PORT = 8765;
+
+const BACKEND_HINTS = Object.freeze({
+  [BACKENDS.HUGGINGFACE]: "Default. Uses Hugging Face realtime. No OpenAI key required.",
+  [BACKENDS.OPENAI_GPT_LIVE]:
+    "OpenAI GPT-Live-1 full-duplex voice. Requires OPENAI_API_KEY. Voices include marin (default), cedar, quartz, ripple, and others listed after you save.",
+});
 
 const HF_MODE_HINTS = Object.freeze({
   [HF_CONNECTION_MODES.DEPLOYED]: "Uses the hosted Hugging Face backend. No API key required.",
@@ -57,6 +68,12 @@ export async function mountSettingsView({ outlet, signal }) {
 }
 
 function buildConnectionSection({ onSaved } = {}) {
+  const backendSelect = h(
+    "select",
+    { class: "settings-select", name: "backend" },
+    h("option", { value: BACKENDS.HUGGINGFACE }, "Hugging Face"),
+    h("option", { value: BACKENDS.OPENAI_GPT_LIVE }, "OpenAI GPT-Live-1")
+  );
   const hfModeSelect = h(
     "select",
     { class: "settings-select", name: "hf_mode" },
@@ -97,6 +114,30 @@ function buildConnectionSection({ onSaved } = {}) {
       hfPortInput
     )
   );
+  const openaiKeyInput = h("input", {
+    type: "password",
+    name: "openai_api_key",
+    autocomplete: "off",
+    placeholder: "sk-...",
+    class: "settings-input",
+  });
+  const openaiFields = h(
+    "label",
+    { class: "settings-field", "data-role": "openai-key-field" },
+    h("span", { class: "settings-label" }, "OpenAI API key"),
+    openaiKeyInput
+  );
+  const hfFields = h(
+    "div",
+    { "data-role": "hf-fields" },
+    h(
+      "label",
+      { class: "settings-field" },
+      h("span", { class: "settings-label" }, "Hugging Face connection"),
+      hfModeSelect
+    ),
+    hfLocalFields
+  );
   const hint = h("p", { class: "settings-hint" }, "");
   const status = h("p", { class: "settings-status", role: "status", "aria-live": "polite" });
   const submitButton = h("button", { type: "submit", class: "btn btn--primary" }, "Save connection");
@@ -107,10 +148,11 @@ function buildConnectionSection({ onSaved } = {}) {
     h(
       "label",
       { class: "settings-field" },
-      h("span", { class: "settings-label" }, "Hugging Face connection"),
-      hfModeSelect
+      h("span", { class: "settings-label" }, "Conversation backend"),
+      backendSelect
     ),
-    hfLocalFields,
+    hfFields,
+    openaiFields,
     hint,
     h("div", { class: "settings-actions" }, submitButton),
     status
@@ -123,37 +165,65 @@ function buildConnectionSection({ onSaved } = {}) {
     form
   );
 
+  let hasStoredOpenAIKey = false;
+
+  function isOpenAI() {
+    return backendSelect.value === BACKENDS.OPENAI_GPT_LIVE;
+  }
+
   function syncLocalFields() {
-    const isLocal = hfModeSelect.value === HF_CONNECTION_MODES.LOCAL;
+    const openai = isOpenAI();
+    hfFields.style.display = openai ? "none" : "";
+    openaiFields.style.display = openai ? "" : "none";
+    openaiKeyInput.disabled = !openai;
+    openaiKeyInput.required = openai && !hasStoredOpenAIKey;
+    const isLocal = !openai && hfModeSelect.value === HF_CONNECTION_MODES.LOCAL;
     hfLocalFields.style.display = isLocal ? "" : "none";
     hfHostInput.disabled = !isLocal;
     hfPortInput.disabled = !isLocal;
     hfHostInput.required = isLocal;
     hfPortInput.required = isLocal;
-    hint.textContent = HF_MODE_HINTS[hfModeSelect.value] || "";
+    hfModeSelect.disabled = openai;
+    if (openai) {
+      hint.textContent = hasStoredOpenAIKey
+        ? `${BACKEND_HINTS[BACKENDS.OPENAI_GPT_LIVE]} A key is already saved; leave blank to keep it.`
+        : BACKEND_HINTS[BACKENDS.OPENAI_GPT_LIVE];
+    } else {
+      hint.textContent = HF_MODE_HINTS[hfModeSelect.value] || BACKEND_HINTS[BACKENDS.HUGGINGFACE];
+    }
   }
 
+  backendSelect.addEventListener("change", syncLocalFields);
   hfModeSelect.addEventListener("change", syncLocalFields);
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (submitButton.disabled) return;
     submitButton.disabled = true;
+    backendSelect.disabled = true;
     hfModeSelect.disabled = true;
     hfHostInput.disabled = true;
     hfPortInput.disabled = true;
+    openaiKeyInput.disabled = true;
     form.setAttribute("aria-busy", "true");
     status.classList.remove("is-error");
     status.textContent = "Saving…";
     try {
-      const payload = { hf_mode: hfModeSelect.value };
-      if (hfModeSelect.value === HF_CONNECTION_MODES.LOCAL) {
-        payload.hf_host = hfHostInput.value.trim();
-        if (hfPortInput.value) {
-          payload.hf_port = Number.parseInt(hfPortInput.value, 10);
+      const payload = { backend: backendSelect.value };
+      if (isOpenAI()) {
+        const key = openaiKeyInput.value.trim();
+        if (key) payload.openai_api_key = key;
+      } else {
+        payload.hf_mode = hfModeSelect.value;
+        if (hfModeSelect.value === HF_CONNECTION_MODES.LOCAL) {
+          payload.hf_host = hfHostInput.value.trim();
+          if (hfPortInput.value) {
+            payload.hf_port = Number.parseInt(hfPortInput.value, 10);
+          }
         }
       }
       const result = await saveBackendConfig(payload);
+      openaiKeyInput.value = "";
       status.textContent =
         result?.message || (result?.requires_restart ? "Saved. Restart the app to apply." : "Saved.");
       await onSaved?.();
@@ -162,7 +232,7 @@ function buildConnectionSection({ onSaved } = {}) {
       status.classList.add("is-error");
     } finally {
       submitButton.disabled = false;
-      hfModeSelect.disabled = false;
+      backendSelect.disabled = false;
       syncLocalFields();
       form.removeAttribute("aria-busy");
     }
@@ -173,6 +243,10 @@ function buildConnectionSection({ onSaved } = {}) {
   return {
     element,
     syncFromStatus(payload) {
+      if (Object.values(BACKENDS).includes(payload?.backend)) {
+        backendSelect.value = payload.backend;
+      }
+      hasStoredOpenAIKey = Boolean(payload?.has_openai_api_key);
       if (Object.values(HF_CONNECTION_MODES).includes(payload?.hf_connection_mode)) {
         hfModeSelect.value = payload.hf_connection_mode;
       }
@@ -182,6 +256,7 @@ function buildConnectionSection({ onSaved } = {}) {
       if (payload?.hf_direct_port != null) {
         hfPortInput.value = String(payload.hf_direct_port);
       }
+      openaiKeyInput.placeholder = hasStoredOpenAIKey ? "Key saved — leave blank to keep" : "sk-...";
       syncLocalFields();
     },
   };
@@ -275,15 +350,26 @@ function buildStatusSection() {
     element,
     render(payload) {
       list.replaceChildren();
-      list.appendChild(statusRow("HF connection", formatHfMode(payload.hf_connection_mode)));
-      if (payload.hf_connection_mode === HF_CONNECTION_MODES.LOCAL) {
-        list.appendChild(statusRow("HF target", formatHfTarget(payload)));
+      list.appendChild(statusRow("Backend", formatBackend(payload.backend)));
+      if (payload.backend === BACKENDS.OPENAI_GPT_LIVE) {
+        list.appendChild(
+          statusRow(
+            "OpenAI key",
+            payload.has_openai_api_key ? "Saved" : "Missing",
+            payload.has_openai_api_key ? "ok" : "warn"
+          )
+        );
+      } else {
+        list.appendChild(statusRow("HF connection", formatHfMode(payload.hf_connection_mode)));
+        if (payload.hf_connection_mode === HF_CONNECTION_MODES.LOCAL) {
+          list.appendChild(statusRow("HF target", formatHfTarget(payload)));
+        }
       }
       list.appendChild(
         statusRow(
           "Configuration",
-          payload.has_hf_connection ? "Ready" : "Missing",
-          payload.has_hf_connection ? "ok" : "warn"
+          payload.can_proceed ? "Ready" : "Missing",
+          payload.can_proceed ? "ok" : "warn"
         )
       );
       const backendState = payload.backend_connected
@@ -324,6 +410,12 @@ function statusRow(label, value, tone) {
     h("dt", { class: "settings-status-label" }, label),
     h("dd", { class: "settings-status-value" }, value)
   );
+}
+
+function formatBackend(backend) {
+  if (backend === BACKENDS.OPENAI_GPT_LIVE) return "OpenAI GPT-Live-1";
+  if (backend === BACKENDS.HUGGINGFACE) return "Hugging Face";
+  return backend || "-";
 }
 
 function formatHfMode(mode) {
