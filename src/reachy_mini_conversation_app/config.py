@@ -9,6 +9,14 @@ from importlib.resources import files
 
 from dotenv import find_dotenv, load_dotenv
 
+from reachy_mini_conversation_app.openai_live_protocol import (
+    LIVE_MODEL,
+    LIVE_WS_URL,
+    DEFAULT_VOICE,
+    LIVE_AVAILABLE_VOICES,
+    DEFAULT_DELEGATION_MODEL,
+)
+
 
 # Locked profile: set to a profile name (e.g., "astronomer") to lock the app
 # to that profile and disable all profile switching. Leave as None for normal behavior.
@@ -71,36 +79,11 @@ REALTIME_TRANSCRIPTION_LANGUAGE_ENV = "REALTIME_TRANSCRIPTION_LANGUAGE"
 HF_LOCAL_CONNECTION_MODE = "local"
 HF_DEPLOYED_CONNECTION_MODE = "deployed"
 HF_REALTIME_SESSION_PROXY_URL = "https://pollen-robotics-reachy-mini-realtime-url.hf.space/session"
-OPENAI_LIVE_WS_URL = "wss://api.openai.com/v1/live/sessions"
-OPENAI_LIVE_MODEL = "gpt-live-1"
-DEFAULT_OPENAI_LIVE_DELEGATION_MODEL = "gpt-5.6-luna"
-
-# Documented GPT-Live voices (marin is the API default) plus the Live-only catalog.
-OPENAI_LIVE_AVAILABLE_VOICES: list[str] = [
-    "marin",
-    "cedar",
-    "quartz",
-    "ripple",
-    "vesper",
-    "willow",
-    "stone",
-    "gleam",
-    "meridian",
-    "bossa",
-    "tempo",
-    "beacon",
-    "delta",
-    "cinder",
-    "alloy",
-    "ash",
-    "ballad",
-    "coral",
-    "echo",
-    "sage",
-    "shimmer",
-    "verse",
-]
-OPENAI_LIVE_DEFAULT_VOICE = "marin"
+OPENAI_LIVE_WS_URL = LIVE_WS_URL
+OPENAI_LIVE_MODEL = LIVE_MODEL
+DEFAULT_OPENAI_LIVE_DELEGATION_MODEL = DEFAULT_DELEGATION_MODEL
+OPENAI_LIVE_AVAILABLE_VOICES = LIVE_AVAILABLE_VOICES
+OPENAI_LIVE_DEFAULT_VOICE = DEFAULT_VOICE
 
 
 @dataclass(frozen=True)

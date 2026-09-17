@@ -163,7 +163,7 @@ OPENAI_API_KEY=sk-...
 # OPENAI_LIVE_DELEGATION_MODEL=gpt-5.6-terra
 ```
 
-The app opens `wss://api.openai.com/v1/live/sessions`, starts a `gpt-live-1` session, and registers robot tools on Responses delegation so dance, motion, memory, and other local tools still run in-process.
+The app opens `wss://api.openai.com/v1/live/sessions`, starts a `gpt-live-1` session, and registers robot tools on Responses delegation so dance, motion, memory, and other local tools still run in-process. The Live JSON/WebSocket helpers live in `openai_live_protocol.py` so another app can copy that file without this repo's conversation loop. Production cutover for Luc's robot is on Lucface/niero; this fork is the upstream-shaped provider.
 
 Selectable Live voices include `marin` (default), `cedar`, plus the Live catalog (`quartz`, `ripple`, `vesper`, `willow`, `stone`, `gleam`, `meridian`, `bossa`, `tempo`, `beacon`, `delta`, `cinder`) and the shared OpenAI voices (`alloy`, `ash`, `ballad`, `coral`, `echo`, `sage`, `shimmer`, `verse`). Voice is fixed for a session; changing it reconnects.
 

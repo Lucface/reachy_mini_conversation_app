@@ -1,6 +1,5 @@
 import json
 import time
-import uuid
 import base64
 import random
 import asyncio
@@ -10,12 +9,9 @@ from typing import Any, Final
 import numpy as np
 from numpy.typing import NDArray
 from websockets.exceptions import ConnectionClosedError
-from websockets.asyncio.client import connect
 
 from reachy_mini_conversation_app.tools import core_tools
 from reachy_mini_conversation_app.config import (
-    OPENAI_LIVE_MODEL,
-    OPENAI_LIVE_WS_URL,
     OPENAI_GPT_LIVE_BACKEND,
     config,
     get_default_voice,
@@ -31,12 +27,25 @@ from reachy_mini_conversation_app.prompts import (
     get_live_conversation_instructions,
 )
 from reachy_mini_conversation_app.streaming import AdditionalOutputs, audio_to_int16
-from reachy_mini_conversation_app.tools.core_tools import (
-    ToolSpec,
-    ToolDependencies,
-    get_tool_specs,
-)
+from reachy_mini_conversation_app.tools.core_tools import ToolSpec, ToolDependencies, get_tool_specs
 from reachy_mini_conversation_app.conversation_handler import ConversationHandler
+from reachy_mini_conversation_app.openai_live_protocol import (
+    LIVE_SAMPLE_RATE,
+    session_close_event,
+    session_start_event,
+    normalize_live_voice,
+    open_live_connection,
+    response_create_event,
+    input_image_item_event,
+    encode_live_client_event,
+    input_audio_append_event,
+    build_live_session_config,
+    instructions_append_event,
+    parse_live_server_message,
+    function_call_output_event,
+    to_responses_function_tools,
+    extract_delegated_function_call,
+)
 from reachy_mini_conversation_app.tools.background_tool_manager import (
     ToolCallRoutine,
     ToolNotification,
@@ -48,28 +57,12 @@ logger = logging.getLogger(__name__)
 
 _TRANSCRIPT_FINAL_DELAY_S: Final[float] = 1.2
 _SPEAKING_IDLE_S: Final[float] = 1.5
-_OPENAI_LIVE_CONNECT_HEADERS: dict[str, str] = {
-    "User-Agent": "reachy-mini-conversation-app",
-}
-
-
-def to_responses_function_tools(tool_specs: list[ToolSpec]) -> list[dict[str, Any]]:
-    """Convert app tool specs to Responses function tools for Live delegation."""
-    return [
-        {
-            "type": "function",
-            "name": spec["name"],
-            "description": spec["description"],
-            "parameters": spec["parameters"],
-        }
-        for spec in tool_specs
-    ]
 
 
 class OpenAIGPTLiveHandler(ConversationHandler):
     """Realtime stream handler for OpenAI GPT-Live-1 over the Live WebSocket API."""
 
-    SAMPLE_RATE = 16000
+    SAMPLE_RATE = LIVE_SAMPLE_RATE
 
     def __init__(
         self,
@@ -110,58 +103,32 @@ class OpenAIGPTLiveHandler(ConversationHandler):
         fallback: str | None = None,
     ) -> str | None:
         """Return a GPT-Live voice, optionally falling back when unsupported."""
-        available_voices = get_available_voices(OPENAI_GPT_LIVE_BACKEND)
-        voice_value = (voice or "").strip()
-        if not voice_value:
-            return fallback
-
-        voice_by_lowercase = {candidate.lower(): candidate for candidate in available_voices}
-        normalized_voice = voice_by_lowercase.get(voice_value.lower())
-        if normalized_voice is not None:
-            return normalized_voice
-
+        resolved = normalize_live_voice(voice)
+        if resolved is not None:
+            return resolved
         if voice:
             logger.warning(
                 "Ignoring unsupported %s %r; expected one of %s",
                 source,
                 voice,
-                available_voices,
+                get_available_voices(OPENAI_GPT_LIVE_BACKEND),
             )
         return fallback
 
     def _build_session_config(self, tool_specs: list[ToolSpec]) -> dict[str, Any]:
         """Return the GPT-Live session.start payload."""
-        return {
-            "model": OPENAI_LIVE_MODEL,
-            "instructions": get_live_conversation_instructions(self.instance_path),
-            "audio": {
-                "format": {"type": "audio/pcm", "rate": self.SAMPLE_RATE},
-                "output": {"voice": self.get_current_voice()},
-            },
-            "delegation": {
-                "type": "responses",
-                "responses": {
-                    "model": get_openai_live_delegation_model(),
-                    "instructions": get_live_delegation_instructions(self.instance_path),
-                    "tools": to_responses_function_tools(tool_specs),
-                    "tool_choice": "auto",
-                    "parallel_tool_calls": True,
-                },
-            },
-        }
+        return build_live_session_config(
+            conversation_instructions=get_live_conversation_instructions(self.instance_path),
+            delegation_instructions=get_live_delegation_instructions(self.instance_path),
+            voice=self.get_current_voice(),
+            tools=to_responses_function_tools(tool_specs),
+            delegation_model=get_openai_live_delegation_model(),
+            sample_rate=self.SAMPLE_RATE,
+        )
 
     def _live_connect(self) -> Any:
         """Return an async context manager for the Live websocket."""
-        api_key = get_openai_api_key()
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required for the GPT-Live-1 backend")
-        return connect(
-            OPENAI_LIVE_WS_URL,
-            additional_headers={
-                "Authorization": f"Bearer {api_key}",
-                **_OPENAI_LIVE_CONNECT_HEADERS,
-            },
-        )
+        return open_live_connection(get_openai_api_key() or "")
 
     def _is_connected(self) -> bool:
         """Return whether the Live websocket is open."""
@@ -177,9 +144,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
         """Send one JSON Live client event."""
         if self.connection is None:
             raise RuntimeError("No active GPT-Live session")
-        if "event_id" not in event:
-            event["event_id"] = f"event_{uuid.uuid4().hex[:12]}"
-        await self.connection.send(json.dumps(event))
+        await self.connection.send(encode_live_client_event(event))
 
     async def _cancel_task(self, task: asyncio.Task[None] | None) -> None:
         if task is None or task.done():
@@ -267,7 +232,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
         try:
             if self.connection is not None:
                 try:
-                    await self._send_event({"type": "session.close"})
+                    await self._send_event(session_close_event())
                 except Exception:
                     pass
                 try:
@@ -298,13 +263,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
             raise ValueError("say: empty text")
         if not self._is_connected():
             raise RuntimeError("say: no active session")
-        await self._send_event(
-            {
-                "type": "session.instructions.append",
-                "delegation_id": None,
-                "content": f"Speak this to the user now: {text}",
-            }
-        )
+        await self._send_event(instructions_append_event(f"Speak this to the user now: {text}"))
         self._mark_activity("say")
 
     async def _send_startup_greeting_prompt(self) -> None:
@@ -318,13 +277,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
             return
 
         try:
-            await self._send_event(
-                {
-                    "type": "session.instructions.append",
-                    "delegation_id": None,
-                    "content": greeting_prompt,
-                }
-            )
+            await self._send_event(instructions_append_event(greeting_prompt))
             self._startup_greeting_sent = True
             self._mark_activity("startup_greeting_prompt")
             logger.info("Queued startup greeting prompt")
@@ -375,16 +328,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
                 self._mark_activity("tool_result_ready")
             model_result_submitted = False
             if send_result_to_model and isinstance(completed_tool.id, str):
-                await self._send_event(
-                    {
-                        "type": "response.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": completed_tool.id,
-                            "output": json.dumps(tool_result_for_model),
-                        },
-                    }
-                )
+                await self._send_event(function_call_output_event(completed_tool.id, tool_result_for_model))
                 model_result_submitted = True
 
             await self.output_queue.put(
@@ -396,21 +340,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
                 if not isinstance(b64_im, str):
                     logger.warning("Unexpected type for b64_im: %s", type(b64_im))
                     b64_im = str(b64_im)
-                await self._send_event(
-                    {
-                        "type": "response.item.create",
-                        "item": {
-                            "type": "message",
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "input_image",
-                                    "image_url": f"data:image/jpeg;base64,{b64_im}",
-                                }
-                            ],
-                        },
-                    }
-                )
+                await self._send_event(input_image_item_event(b64_im))
                 logger.info("Queued camera image for GPT-Live Responses delegation")
 
             if isinstance(completed_tool.id, str):
@@ -422,7 +352,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
 
             if self._tool_batch_needs_response and not self._in_flight_tool_calls:
                 self._tool_batch_needs_response = False
-                await self._send_event({"type": "response.create"})
+                await self._send_event(response_create_event())
         except ConnectionClosedError:
             logger.warning("Connection closed while sending tool result")
             self.connection = None
@@ -500,27 +430,13 @@ class OpenAIGPTLiveHandler(ConversationHandler):
 
     async def _handle_nested_response_event(self, envelope: dict[str, Any]) -> None:
         """Dispatch a Responses event nested inside response.event."""
-        nested = envelope.get("event")
-        if not isinstance(nested, dict):
+        function_call = extract_delegated_function_call(envelope)
+        if function_call is not None:
+            tool_name, args_json_str, call_id = function_call
+            await self._start_tool_call(call_id, tool_name, args_json_str)
             return
-        nested_type = nested.get("type")
-        if nested_type == "response.output_item.done":
-            item = nested.get("item")
-            if not isinstance(item, dict) or item.get("type") != "function_call":
-                return
-            tool_name = item.get("name")
-            args_json_str = item.get("arguments")
-            call_id = item.get("call_id") or str(uuid.uuid4())
-            if not isinstance(tool_name, str) or not isinstance(args_json_str, str):
-                logger.error(
-                    "Invalid delegated tool call: tool_name=%s args=%s call_id=%s",
-                    tool_name,
-                    args_json_str,
-                    call_id,
-                )
-                return
-            await self._start_tool_call(str(call_id), tool_name, args_json_str)
-        elif nested_type == "error":
+        nested = envelope.get("event")
+        if isinstance(nested, dict) and nested.get("type") == "error":
             err = nested.get("error") if isinstance(nested.get("error"), dict) else nested
             msg = err.get("message") if isinstance(err, dict) else str(err)
             logger.error("Delegated Responses error: %s (raw=%s)", msg, nested)
@@ -596,12 +512,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
         async with self._live_connect() as conn:
             self.connection = conn
             try:
-                await self._send_event(
-                    {
-                        "type": "session.start",
-                        "session": self._build_session_config(tool_specs),
-                    }
-                )
+                await self._send_event(session_start_event(self._build_session_config(tool_specs)))
                 logger.info(
                     "GPT-Live session.start sent profile=%r voice=%r",
                     getattr(config, "REACHY_MINI_CUSTOM_PROFILE", None),
@@ -614,17 +525,8 @@ class OpenAIGPTLiveHandler(ConversationHandler):
             self.tool_manager.start_up(tool_callbacks=[self._handle_tool_result])
             try:
                 async for raw in conn:
-                    if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8")
-                    if not isinstance(raw, str):
-                        logger.warning("Ignoring non-text GPT-Live message: %s", type(raw).__name__)
-                        continue
-                    try:
-                        event = json.loads(raw)
-                    except json.JSONDecodeError:
-                        logger.warning("Ignoring invalid GPT-Live JSON")
-                        continue
-                    if not isinstance(event, dict):
+                    event = parse_live_server_message(raw)
+                    if event is None:
                         continue
                     await self._handle_live_event(event)
             finally:
@@ -650,12 +552,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
 
         audio_frame = audio_to_int16(audio_frame)
         try:
-            await self._send_event(
-                {
-                    "type": "session.input_audio.append",
-                    "audio": base64.b64encode(audio_frame.tobytes()).decode("utf-8"),
-                }
-            )
+            await self._send_event(input_audio_append_event(audio_frame.tobytes()))
         except Exception as e:
             logger.debug("Dropping audio frame: connection not ready (%s)", e)
 
@@ -668,7 +565,7 @@ class OpenAIGPTLiveHandler(ConversationHandler):
 
         if self.connection:
             try:
-                await self._send_event({"type": "session.close"})
+                await self._send_event(session_close_event())
             except Exception as e:
                 logger.debug("session.close ignored: %s", e)
             try:

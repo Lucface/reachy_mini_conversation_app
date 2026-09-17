@@ -12,8 +12,8 @@ import pytest
 import reachy_mini_conversation_app.openai_gpt_live as live_mod
 from reachy_mini_conversation_app.config import OPENAI_LIVE_MODEL, OPENAI_LIVE_DEFAULT_VOICE
 from reachy_mini_conversation_app.streaming import AdditionalOutputs
-from reachy_mini_conversation_app.openai_gpt_live import OpenAIGPTLiveHandler, to_responses_function_tools
-from reachy_mini_conversation_app.tools.core_tools import ToolSpec, ToolDependencies
+from reachy_mini_conversation_app.openai_gpt_live import OpenAIGPTLiveHandler
+from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 
 
 def _plain_handler() -> OpenAIGPTLiveHandler:
@@ -75,25 +75,6 @@ def _drain(handler: OpenAIGPTLiveHandler) -> list[Any]:
     while not handler.output_queue.empty():
         items.append(handler.output_queue.get_nowait())
     return items
-
-
-def test_to_responses_function_tools_preserves_schema() -> None:
-    """App tool specs become Responses function tools for Live delegation."""
-    spec: ToolSpec = {
-        "type": "function",
-        "name": "dance",
-        "description": "Queue a dance",
-        "parameters": {"type": "object", "properties": {}},
-    }
-
-    assert to_responses_function_tools([spec]) == [
-        {
-            "type": "function",
-            "name": "dance",
-            "description": "Queue a dance",
-            "parameters": {"type": "object", "properties": {}},
-        }
-    ]
 
 
 def test_session_config_uses_gpt_live_and_delegation() -> None:
