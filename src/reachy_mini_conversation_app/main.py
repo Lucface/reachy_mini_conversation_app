@@ -50,6 +50,7 @@ def start_import_warmup() -> threading.Thread:
                 import openai.resources.realtime  # noqa: F401
                 import websockets.asyncio.client  # noqa: F401
 
+                import reachy_mini_conversation_app.openai_gpt_live  # noqa: F401
                 import reachy_mini_conversation_app.huggingface_realtime  # noqa: F401
             except Exception:
                 logging.getLogger(__name__).debug("Import warmup failed", exc_info=True)
@@ -121,8 +122,10 @@ def run(
     # Putting these dependencies here makes the dashboard faster to load when the conversation app is installed
     from reachy_mini_conversation_app.moves import MovementManager
     from reachy_mini_conversation_app.config import (
+        OPENAI_GPT_LIVE_BACKEND,
         HF_LOCAL_CONNECTION_MODE,
         set_instance_path,
+        get_conversation_backend,
         get_hf_connection_selection,
         resolve_app_timeout_minutes,
         refresh_runtime_config_from_env,
@@ -154,10 +157,14 @@ def run(
         except Exception as e:
             logger.warning("Failed to load startup settings: %s", e)
 
-    logger.info(
-        "Configured Hugging Face realtime backend, connection mode: %s",
-        get_hf_connection_selection().mode,
-    )
+    conversation_backend = get_conversation_backend()
+    if conversation_backend == OPENAI_GPT_LIVE_BACKEND:
+        logger.info("Configured conversation backend: OpenAI GPT-Live-1")
+    else:
+        logger.info(
+            "Configured conversation backend: Hugging Face, connection mode: %s",
+            get_hf_connection_selection().mode,
+        )
 
     from reachy_mini_conversation_app.console import LocalStream
     from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
@@ -199,7 +206,17 @@ def run(
     )
 
     def build_handler(startup_voice: Optional[str] = None) -> ConversationHandler:
-        """Build a Hugging Face realtime handler for the current runtime config."""
+        """Build the realtime handler for the currently selected backend."""
+        if get_conversation_backend() == OPENAI_GPT_LIVE_BACKEND:
+            from reachy_mini_conversation_app.openai_gpt_live import OpenAIGPTLiveHandler
+
+            logger.info("Using OpenAI GPT-Live-1 handler")
+            return OpenAIGPTLiveHandler(
+                deps,
+                instance_path=instance_path,
+                startup_voice=startup_voice,
+            )
+
         from reachy_mini_conversation_app.huggingface_realtime import HuggingFaceRealtimeHandler
 
         hf_connection_selection = get_hf_connection_selection()

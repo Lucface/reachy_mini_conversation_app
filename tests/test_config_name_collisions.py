@@ -95,7 +95,7 @@ def test_obsolete_backend_env_is_ignored_with_warning(
 
     assert "BACKEND_PROVIDER" in caplog.text
     assert "MODEL_NAME" in caplog.text
-    assert "Hugging Face backend only" in caplog.text
+    assert "CONVERSATION_BACKEND" in caplog.text
 
 
 def test_hf_default_session_url_uses_stable_space_proxy() -> None:

@@ -21,19 +21,24 @@ from reachy_mini.media.media_manager import MediaBackend
 from reachy_mini_conversation_app.config import (
     HF_BACKEND,
     LOCKED_PROFILE,
+    OPENAI_API_KEY_ENV,
     HF_REALTIME_WS_URL_ENV,
+    OPENAI_GPT_LIVE_BACKEND,
+    CONVERSATION_BACKEND_ENV,
     HF_LOCAL_CONNECTION_MODE,
     HF_DEPLOYED_CONNECTION_MODE,
     HF_REALTIME_CONNECTION_MODE_ENV,
     config,
     get_default_voice,
     get_hf_session_url,
+    get_openai_api_key,
     set_custom_profile,
     get_available_voices,
     get_hf_direct_ws_url,
     build_hf_direct_ws_url,
-    has_hf_realtime_target,
     parse_hf_direct_target,
+    get_conversation_backend,
+    has_backend_configuration,
     get_hf_connection_selection,
     refresh_runtime_config_from_env,
 )
@@ -421,6 +426,17 @@ class LocalStream:
         self._persist_env_values({HF_REALTIME_CONNECTION_MODE_ENV: HF_DEPLOYED_CONNECTION_MODE})
         self._remove_persisted_env_values(("HF_REALTIME_SESSION_URL",))
 
+    def _persist_conversation_backend(self, backend: str) -> None:
+        """Persist the selected conversation backend."""
+        self._persist_env_values({CONVERSATION_BACKEND_ENV: backend})
+
+    def _persist_openai_live_connection(self, api_key: str | None) -> None:
+        """Persist the GPT-Live-1 backend and optional API key."""
+        updates = {CONVERSATION_BACKEND_ENV: OPENAI_GPT_LIVE_BACKEND}
+        if api_key:
+            updates[OPENAI_API_KEY_ENV] = api_key
+        self._persist_env_values(updates)
+
     def _persist_personality(self, profile: Optional[str], voice_override: Optional[str] = None) -> None:
         """Persist startup profile and voice in instance-local UI settings."""
         if LOCKED_PROFILE is not None:
@@ -462,7 +478,7 @@ class LocalStream:
         return "Applied personality and restarting backend."
 
     async def get_available_voices(self) -> list[str]:
-        """Return the voices available for the Hugging Face backend."""
+        """Return the voices available for the selected backend."""
         return get_available_voices()
 
     def get_current_voice(self) -> str:
@@ -537,17 +553,21 @@ class LocalStream:
             hf_direct_host, hf_direct_port = parse_hf_direct_target(hf_ws_url)
             hf_connection_selection = get_hf_connection_selection()
             has_hf_connection = hf_connection_selection.has_target
+            has_openai_key = bool(get_openai_api_key())
+            conversation_backend = get_conversation_backend()
+            can_proceed = has_backend_configuration()
             backend_connection = self._backend_connection_status()
             return {
-                "backend": HF_BACKEND,
-                "has_key": has_hf_connection,
+                "backend": conversation_backend,
+                "has_key": has_openai_key if conversation_backend == OPENAI_GPT_LIVE_BACKEND else has_hf_connection,
                 "has_hf_session_url": bool(hf_session_url),
                 "has_hf_ws_url": bool(hf_ws_url),
                 "has_hf_connection": has_hf_connection,
+                "has_openai_api_key": has_openai_key,
                 "hf_connection_mode": hf_connection_selection.mode,
                 "hf_direct_host": hf_direct_host,
                 "hf_direct_port": hf_direct_port,
-                "can_proceed": has_hf_connection,
+                "can_proceed": can_proceed,
                 "can_proceed_with_hf": has_hf_connection,
                 "requires_restart": not self._can_rebuild_handler(),
                 **backend_connection,
@@ -603,28 +623,48 @@ class LocalStream:
 
         @rpc.method("backend.config")  # type: ignore[untyped-decorator]
         def _rpc_backend_config(params: dict[str, object]) -> dict[str, object]:
-            hf_selection = get_hf_connection_selection()
-            hf_mode = str(params.get("hf_mode") or hf_selection.mode).strip().lower()
-            if hf_mode == HF_LOCAL_CONNECTION_MODE:
-                existing_host, existing_port = parse_hf_direct_target(hf_selection.direct_ws_url)
-                host = str(params.get("hf_host") or "").strip() or existing_host or ""
-                if not host:
-                    raise JsonRpcError("Hugging Face host required", reason="empty_hf_host", code=-32602)
-                if "://" in host or "/" in host or "?" in host or "#" in host:
-                    raise JsonRpcError("invalid Hugging Face host", reason="invalid_hf_host", code=-32602)
-                raw_port = params.get("hf_port")
-                port = int(raw_port) if isinstance(raw_port, (int, float, str)) else (existing_port or 8765)
-                if port < 1 or port > 65535:
-                    raise JsonRpcError("invalid Hugging Face port", reason="invalid_hf_port", code=-32602)
-                self._persist_hf_direct_connection(host, port)
-            elif hf_mode == HF_DEPLOYED_CONNECTION_MODE:
-                if not bool(get_hf_session_url()):
-                    raise JsonRpcError(
-                        "missing Hugging Face session url", reason="missing_hf_session_url", code=-32602
-                    )
-                self._persist_hf_allocator_connection()
+            raw_backend = str(params.get("backend") or "").strip().lower()
+            if raw_backend == OPENAI_GPT_LIVE_BACKEND:
+                conversation_backend = OPENAI_GPT_LIVE_BACKEND
+            elif raw_backend == HF_BACKEND or "hf_mode" in params or "hf_host" in params:
+                conversation_backend = HF_BACKEND
             else:
-                raise JsonRpcError("invalid Hugging Face mode", reason="invalid_hf_mode", code=-32602)
+                conversation_backend = get_conversation_backend()
+
+            if conversation_backend == OPENAI_GPT_LIVE_BACKEND:
+                submitted_key = str(params.get("openai_api_key") or "").strip()
+                if not submitted_key and not get_openai_api_key():
+                    raise JsonRpcError(
+                        "OPENAI_API_KEY is required for GPT-Live-1",
+                        reason="missing_openai_api_key",
+                        code=-32602,
+                    )
+                self._persist_openai_live_connection(submitted_key or None)
+            else:
+                hf_selection = get_hf_connection_selection()
+                hf_mode = str(params.get("hf_mode") or hf_selection.mode).strip().lower()
+                if hf_mode == HF_LOCAL_CONNECTION_MODE:
+                    existing_host, existing_port = parse_hf_direct_target(hf_selection.direct_ws_url)
+                    host = str(params.get("hf_host") or "").strip() or existing_host or ""
+                    if not host:
+                        raise JsonRpcError("Hugging Face host required", reason="empty_hf_host", code=-32602)
+                    if "://" in host or "/" in host or "?" in host or "#" in host:
+                        raise JsonRpcError("invalid Hugging Face host", reason="invalid_hf_host", code=-32602)
+                    raw_port = params.get("hf_port")
+                    port = int(raw_port) if isinstance(raw_port, (int, float, str)) else (existing_port or 8765)
+                    if port < 1 or port > 65535:
+                        raise JsonRpcError("invalid Hugging Face port", reason="invalid_hf_port", code=-32602)
+                    self._persist_conversation_backend(HF_BACKEND)
+                    self._persist_hf_direct_connection(host, port)
+                elif hf_mode == HF_DEPLOYED_CONNECTION_MODE:
+                    if not bool(get_hf_session_url()):
+                        raise JsonRpcError(
+                            "missing Hugging Face session url", reason="missing_hf_session_url", code=-32602
+                        )
+                    self._persist_conversation_backend(HF_BACKEND)
+                    self._persist_hf_allocator_connection()
+                else:
+                    raise JsonRpcError("invalid Hugging Face mode", reason="invalid_hf_mode", code=-32602)
 
             if self._can_rebuild_handler():
                 self._mark_restart_requested("backend_config_changed")
@@ -699,10 +739,13 @@ class LocalStream:
                     await self._sleep_or_restart_requested(self._backend_retry_delay)
                     continue
 
-            if not has_hf_realtime_target():
-                self._set_backend_connection_state(
-                    "waiting_for_config", f"{HF_REALTIME_WS_URL_ENV} is not configured."
+            if not has_backend_configuration():
+                missing = (
+                    f"{OPENAI_API_KEY_ENV} is not configured."
+                    if get_conversation_backend() == OPENAI_GPT_LIVE_BACKEND
+                    else f"{HF_REALTIME_WS_URL_ENV} is not configured."
                 )
+                self._set_backend_connection_state("waiting_for_config", missing)
                 await self._sleep_or_restart_requested(0.5)
                 continue
 
@@ -758,22 +801,24 @@ class LocalStream:
         # (do this AFTER loading the instance .env so status endpoint sees the right value)
         self._init_settings_ui_if_needed()
 
-        # If the Hugging Face target is still missing -> wait until provided via the settings UI
-        if not has_hf_realtime_target():
-            self._set_backend_connection_state("waiting_for_config", f"{HF_REALTIME_WS_URL_ENV} is not configured.")
+        # If the selected backend is still missing credentials -> wait until provided via the settings UI
+        if not has_backend_configuration():
+            missing_name = (
+                OPENAI_API_KEY_ENV if get_conversation_backend() == OPENAI_GPT_LIVE_BACKEND else HF_REALTIME_WS_URL_ENV
+            )
+            self._set_backend_connection_state("waiting_for_config", f"{missing_name} is not configured.")
             if self._settings_app is None:
                 logger.error(
-                    "%s not found. Set it in the app .env before starting the Hugging Face backend.",
-                    HF_REALTIME_WS_URL_ENV,
+                    "%s not found. Set it in the app .env before starting the selected backend.",
+                    missing_name,
                 )
                 return
-            logger.warning("%s not found. Open the app settings page to configure it.", HF_REALTIME_WS_URL_ENV)
-            # Poll until a target becomes available (set via the settings UI)
+            logger.warning("%s not found. Open the app settings page to configure it.", missing_name)
             try:
-                while not self._stop_event.is_set() and not has_hf_realtime_target():
+                while not self._stop_event.is_set() and not has_backend_configuration():
                     time.sleep(0.2)
             except KeyboardInterrupt:
-                logger.info("Interrupted while waiting for Hugging Face configuration.")
+                logger.info("Interrupted while waiting for backend configuration.")
                 return
             if self._stop_event.is_set():
                 return

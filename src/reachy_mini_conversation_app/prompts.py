@@ -21,6 +21,19 @@ DEFAULT_GREETING_PROMPT = (
     "Keep it to one sentence, invite the user in naturally, and vary the wording each time."
 )
 
+LIVE_CONVERSATION_DELEGATION_HINT = (
+    "You are in a live spoken conversation. Keep replies brief. "
+    "Delegate robot actions (move, dance, emotion, look, camera, memory, sleep) "
+    "and any request that needs a tool or current lookup to the backend."
+)
+
+LIVE_DELEGATION_INSTRUCTIONS = (
+    "You operate Reachy Mini's tools during a live voice conversation. "
+    "Transcripts can contain mistakes and later corrections. "
+    "Call the matching function when the user wants motion, vision, memory, sleep, or a lookup. "
+    "Return short verified facts. Do not invent a successful action."
+)
+
 
 def _active_profile() -> ProfileDefinition:
     return read_profile(config.REACHY_MINI_CUSTOM_PROFILE)
@@ -60,6 +73,19 @@ def get_session_voice(default: str | None = None) -> str:
     except (FileNotFoundError, ProfileFormatError) as exc:
         logger.warning("Failed to load the active profile voice: %s", exc)
         return fallback
+
+
+def get_live_conversation_instructions(instance_path: str | Path | None = None) -> str:
+    """Return GPT-Live conversation instructions plus when to delegate."""
+    return f"{get_session_instructions(instance_path)}\n\n{LIVE_CONVERSATION_DELEGATION_HINT}"
+
+
+def get_live_delegation_instructions(instance_path: str | Path | None = None) -> str:
+    """Return backend-agent instructions for GPT-Live Responses delegation."""
+    memory_prompt = format_memory_for_prompt(instance_path)
+    if memory_prompt:
+        return f"{memory_prompt}\n\n{LIVE_DELEGATION_INSTRUCTIONS}"
+    return LIVE_DELEGATION_INSTRUCTIONS
 
 
 def get_session_greeting_prompt() -> str:
